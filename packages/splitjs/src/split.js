@@ -141,6 +141,8 @@ const Split = (idsOption, options = {}) => {
     let positionEnd
     let clientSize
     let elements
+    let pairs = []
+    let boundings = []
 
     // Allow HTMLCollection to be used as an argument when supported
     if (Array.from) {
@@ -157,6 +159,7 @@ const Split = (idsOption, options = {}) => {
 
     // Set default options.sizes to equal percentages of the parent element.
     let sizes = getOption(options, 'sizes') || ids.map(() => 100 / ids.length)
+    let sizes_real = Array.from(sizes)
 
     // Standardize minSize to an array if it isn't already. This allows minSize
     // to be passed as a number.
@@ -166,6 +169,7 @@ const Split = (idsOption, options = {}) => {
     // Get other options
     const expandToMin = getOption(options, 'expandToMin', false)
     const gutterSize = getOption(options, 'gutterSize', 10)
+    const gutterSnap = getOption(options, 'gutterSnap', false)
     const gutterAlign = getOption(options, 'gutterAlign', 'center')
     const snapOffset = getOption(options, 'snapOffset', 30)
     const dragInterval = getOption(options, 'dragInterval', 1)
@@ -222,6 +226,8 @@ const Split = (idsOption, options = {}) => {
             // eslint-disable-next-line no-param-reassign
             el.style[prop] = style[prop]
         })
+        sizes_real[i] = size
+        boundings[i] = el[getBoundingClientRect]()
     }
 
     function setGutterSize(gutterElement, gutSize, i) {
@@ -236,7 +242,9 @@ const Split = (idsOption, options = {}) => {
     function getSizes() {
         return elements.map(element => element.size)
     }
-
+    function actualSizes() {
+        return boundings
+    }
     // Supports touch events, but not multitouch, so only the first
     // finger `touches[0]` is counted.
     function getMousePosition(e) {
@@ -251,13 +259,14 @@ const Split = (idsOption, options = {}) => {
     // Both sizes are calculated from the initial parent percentage,
     // then the gutter size is subtracted.
     function adjust(offset) {
-        const a = elements[this.a]
-        const b = elements[this.b]
-        const percentage = a.size + b.size
+        let a = elements[this.a]
+        let b = elements[this.b]
+        let percentage = a.size + b.size
 
-        a.size = (offset / this.size) * percentage
+        // console.log("adjust [" + offset + "].. ", sizes_real)
+
         b.size = percentage - (offset / this.size) * percentage
-
+        a.size = (offset / this.size) * percentage
         setElementSize(a.element, a.size, this[aGutterSize], a.i)
         setElementSize(b.element, b.size, this[bGutterSize], b.i)
     }
@@ -485,6 +494,16 @@ const Split = (idsOption, options = {}) => {
         document.body.style.cursor = ''
     }
 
+    function collapsedPair(base_pair, idx, side) {
+            const target = side === 'a' ? notCollapsedLeft(idx) : notCollapsedRight(idx)
+            if (target !== -1) {
+                const target_element = elements[target].element
+                let pair = clone_pair(base_pair)
+                pair[side] = target
+                return [pair, target_element]
+            }
+    }
+
     // startDragging calls `calculateSizes` to store the inital size in the pair object.
     // It also adds event listeners for mouse/touch events,
     // and prevents selection while dragging so avoid the selecting text.
@@ -495,9 +514,18 @@ const Split = (idsOption, options = {}) => {
         }
 
         // Alias frequently used variables to save space. 200 bytes.
-        const self = this
-        const a = elements[self.a].element
-        const b = elements[self.b].element
+        let self = this
+        let a = elements[self.a].element
+        let b = elements[self.b].element
+
+        if (gutterSnap) {
+            if (isCollapsed(self.a) && this.a > 0) {
+                [self, a] = collapsedPair(self, self.a, "a")
+            }
+            if (isCollapsed(self.b) && this.b < maxIndex() - 1) {
+                [self, b] = collapsedPair(self, self.b, "b")
+            }
+        }
 
         // Call the onDragStart callback.
         if (!self.dragging) {
@@ -573,16 +601,9 @@ const Split = (idsOption, options = {}) => {
     // |           pair 0                pair 1             pair 2           |
     // |             |                     |                  |              |
     // -----------------------------------------------------------------------
-    const pairs = []
-    elements = ids.map((id, i) => {
-        // Create the element object.
-        const element = {
-            element: elementOrSelector(id),
-            size: sizes[i],
-            minSize: minSizes[i],
-            i,
-        }
+    // const pairs = []
 
+    function create_pair(i, element) {
         let pair
 
         if (i > 0) {
@@ -617,6 +638,7 @@ const Split = (idsOption, options = {}) => {
                 pair.a = pair.b
                 pair.b = temp
             }
+
         }
 
         // Determine the size of the current element. IE8 is supported by
@@ -634,19 +656,36 @@ const Split = (idsOption, options = {}) => {
                 pair[gutterStartDragging] = startDragging.bind(pair)
 
                 // Attach bound event listener
-                gutterElement[addEventListener](
-                    'mousedown',
-                    pair[gutterStartDragging],
-                )
-                gutterElement[addEventListener](
-                    'touchstart',
-                    pair[gutterStartDragging],
-                )
+                gutterElement[addEventListener]('mousedown',  pair[gutterStartDragging])
+                gutterElement[addEventListener]('touchstart', pair[gutterStartDragging])
 
                 parent.insertBefore(gutterElement, element.element)
 
                 pair.gutter = gutterElement
             }
+        }
+        return pair
+    }
+
+    function clone_pair(pair) {
+        return Object.assign({}, pair)
+    }
+
+    function recalculateBounding() {
+        for (let i=0; i<maxIndex(); i+=1) {
+            const element = elements[i]
+            // boundings[i] = element[getBoundingClientRect]()
+            boundings[i] = element.element[getBoundingClientRect]()
+        }
+    }
+
+    elements = ids.map((id, i) => {
+        // Create the element object.
+        const element = {
+            element: elementOrSelector(id),
+            size: sizes[i],
+            minSize: minSizes[i],
+            i,
         }
 
         setElementSize(
@@ -664,12 +703,37 @@ const Split = (idsOption, options = {}) => {
         // After the first iteration, and we have a pair object, append it to the
         // list of pairs.
         if (i > 0) {
-            pairs.push(pair)
+            pairs.push(create_pair(i, element))
         }
 
         return element
     })
 
+    recalculateBounding()
+
+    function isCollapsed(i)  {
+        return sizes_real[i] < 0.9
+    }
+    function maxIndex() {
+        return sizes.length
+    }
+    function notCollapsedLeft(start) {
+        for (let i=start; i>=0; i--) {
+            if (! isCollapsed(i)) {
+                return i
+            }
+        }
+        return  -1
+    }
+    function notCollapsedRight(start) {
+        const max_index = maxIndex()
+        for (let i=start; i < max_index; i++) {
+            if (! isCollapsed(i)) {
+                return i
+            }
+        }
+        return  -1
+    }
     function adjustToMin(element) {
         const isLast = element.i === pairs.length
         const pair = isLast ? pairs[element.i - 1] : pairs[element.i]
@@ -754,9 +818,8 @@ const Split = (idsOption, options = {}) => {
     return {
         setSizes,
         getSizes,
-        collapse(i) {
-            adjustToMin(elements[i])
-        },
+        collapse(i) { adjustToMin(elements[i]) },
+        actualSizes,
         destroy,
         parent,
         pairs,
